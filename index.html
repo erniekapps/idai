@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-black text-white h-screen flex p-4 gap-4 overflow-hidden">
+    
+    <div id="startOverlay" class="fixed inset-0 z-[60] bg-slate-950 flex flex-col items-center justify-center text-center p-10">
+        <button onclick="startMoshi()" class="bg-emerald-600 px-12 py-5 rounded-2xl font-bold text-2xl shadow-xl">
+            Start AI Voice Tour
+        </button>
+    </div>
+
+    <div class="flex-1 flex flex-col gap-4">
+        <div class="flex-1 bg-zinc-900 rounded-3xl relative overflow-hidden ring-1 ring-white/10">
+            <iframe id="browser" src="about:blank" class="w-full h-full border-0"></iframe>
+            <video id="webcam" autoplay muted class="absolute bottom-6 right-6 w-48 rounded-2xl border border-white/10"></video>
+        </div>
+        
+        <div class="h-20 bg-zinc-900/80 rounded-2xl flex items-center justify-center gap-6">
+            <button onclick="finishSession()" class="px-12 py-3 bg-red-600 rounded-xl font-bold">End Demo</button>
+        </div>
+    </div>
+
+    <div class="w-80 bg-zinc-900 rounded-3xl p-6 border border-white/10">
+        <h2 class="text-xs font-bold text-zinc-500 uppercase mb-4">Live Transcript</h2>
+        <div id="logs" class="space-y-2 text-sm"></div>
+    </div>
+
+    <script>
+        const token = new URLSearchParams(window.location.search).get('token');
+        const ws = new WebSocket(`ws://${location.host}/ws/${token}`);
+        ws.binaryType = 'arraybuffer';
+
+        let audioCtx;
+        
+        async function startMoshi() {
+            document.getElementById('startOverlay').classList.add('hidden');
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            document.getElementById('webcam').srcObject = stream;
+
+            const source = audioCtx.createMediaStreamSource(stream);
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            
+            source.connect(processor);
+            processor.connect(audioCtx.destination);
+
+            processor.onaudioprocess = (e) => {
+                if (ws.readyState !== 1) return;
+                const input = e.inputBuffer.getChannelData(0);
+                // In a production Moshi app, you would use an Opus encoder here.
+                // For this demo, we assume the backend handles raw or expects tagged data.
+                const pcm16 = new Int16Array(input.length);
+                for (let i = 0; i < input.length; i++) pcm16[i] = input[i] * 0x7FFF;
+                
+                const packet = new Uint8Array(pcm16.buffer.byteLength + 1);
+                packet[0] = 0x01; // Audio Tag
+                packet.set(new Uint8Array(pcm16.buffer), 1);
+                ws.send(packet);
+            };
+        }
+
+        ws.onmessage = async (e) => {
+            if (e.data instanceof ArrayBuffer) {
+                const data = new Uint8Array(e.data);
+                const tag = data[0];
+                const payload = data.slice(1);
+
+                if (tag === 0x01) { // AUDIO
+                    // You'd need a simple Opus decoder here to play 'payload'
+                    console.log("Audio chunk received");
+                } else if (tag === 0x02) { // TEXT
+                    const text = new TextDecoder().decode(payload);
+                    const l = document.getElementById('logs');
+                    l.innerHTML += `<p class="text-emerald-400">Ava: ${text}</p>`;
+                }
+            } else {
+                const m = JSON.parse(e.data);
+                if (m.type === 'browser_url') document.getElementById('browser').src = m.url;
+            }
+        };
+
+        function finishSession() {
+            ws.send(JSON.stringify({type: 'close_session'}));
+            location.href = '/';
+        }
+    </script>
+</body>
+</html>
